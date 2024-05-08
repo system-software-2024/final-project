@@ -1,5 +1,5 @@
 Echo Server
 ===
 
-A simple echo server implemented with io_uring.
+A simple TCP echo server
 Use `nc localhost [port]` to communicate with the server.

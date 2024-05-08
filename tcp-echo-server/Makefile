@@ -1,11 +1,13 @@
-CC = gcc
-CFLAGS = -Wall -O2 -D_GNU_SOURCE -g
-LIB = uring
+DIRS = epoll io-uring multi-process
 
-.PHONY: clean
+.PHONY: all $(DIRS) clean
 
-all:
-	$(CC) $(CFLAGS) -o server server.c -l$(LIB)
+all: $(DIRS)
 
-clean:
-	rm server
+$(DIRS):
+	make -C $@
+
+clean: 
+	@for dir in $(DIRS); do \
+		make -C $$dir clean; \
+	done
