@@ -262,7 +262,7 @@ static int setup_listening_socket(int port)
         exit(1);
     }
 
-    if (listen(listen_sock, 10) < 0) {
+    if (listen(listen_sock, 128) < 0) {
         perror("listen");
         exit(1);
     }
