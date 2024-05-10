@@ -98,9 +98,8 @@ static void put_request(struct req *req)
     /* Free requests */
     if (num_reqs > MAX_REQUEST * 2) {
         for (int i = 0; i < num_reqs - MAX_REQUEST; i++) {
-            struct req *tmp = req_head;
-            req_head = tmp->next;
-            free(tmp);
+            req = get_request();
+            free(req);
         }
     }
 }
