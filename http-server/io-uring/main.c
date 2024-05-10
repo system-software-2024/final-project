@@ -24,6 +24,7 @@
 #define MIN_MAJOR_VERSION       5
 
 #define MAX_SQE_PER_LOOP        5
+#define MAX_REQUEST                2048
 
 static const char* response =
             "HTTP/1.1 200 OK\r\n"
@@ -67,14 +68,47 @@ struct conn {
 struct req {
     struct conn *conn;
     int type;
-    char *buf;
-    int pos, len;
+    struct req *next;
 };
+
+static struct req *req_head = NULL;
+static int num_reqs = 0;
+
+static struct req *get_request(void)
+{
+    struct req *req = NULL;
+
+    if (req_head) {
+        req = req_head;
+        req_head = req->next;
+        num_reqs--;
+    } else {
+        req = calloc(1, sizeof(*req));
+    }
+
+    return req;
+}
+
+static void put_request(struct req *req)
+{
+    req->next = req_head;
+    req_head = req;
+    num_reqs++;
+
+    /* Free requests */
+    if (num_reqs > MAX_REQUEST * 2) {
+        for (int i = 0; i < num_reqs - MAX_REQUEST; i++) {
+            struct req *tmp = req_head;
+            req_head = tmp->next;
+            free(tmp);
+        }
+    }
+}
 
 static void add_accept_request(struct io_uring *ring, int sock)
 {
     struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
-    struct req *request = calloc(1, sizeof(*request));
+    struct req *request = get_request();
     request->type = EVENT_TYPE_ACCEPT;
     io_uring_prep_accept(sqe, sock, NULL, NULL, 0);
     io_uring_sqe_set_data(sqe, request);
@@ -83,7 +117,7 @@ static void add_accept_request(struct io_uring *ring, int sock)
 static void add_read_request(struct conn *conn)
 {
     struct io_uring_sqe *sqe = io_uring_get_sqe(conn->ring);
-    struct req *request = calloc(1, sizeof(*request));
+    struct req *request = get_request();
     request->type = EVENT_TYPE_READ;
     request->conn = conn;
     io_uring_prep_recv(sqe, conn->sock, conn->buf + conn->buflen, BUF_SZ - conn->buflen, 0);
@@ -102,7 +136,7 @@ static void close_connection(struct conn *conn)
 static void add_write_request(struct conn *conn, const char *buf, int buflen)
 {
     struct io_uring_sqe *sqe = io_uring_get_sqe(conn->ring);
-    struct req *request = calloc(1, sizeof(*request));
+    struct req *request = get_request();
     request->type = EVENT_TYPE_WRITE;
     request->conn = conn;
     io_uring_prep_send(sqe, conn->sock, buf, buflen, 0);
@@ -261,7 +295,7 @@ void server_loop(int sock)
             }
 
             io_uring_cqe_seen(&ring, cqe);
-            free(request);
+            put_request(request);
         }
     }
 }
@@ -301,6 +335,12 @@ int main(int argc, char *argv[])
         port = atoi(argv[1]);
 
     int sock = setup_listening_socket(port);
+
+    /* Add Empty Requests */
+    for (int i = 0; i < MAX_REQUEST; i++) {
+        struct req *request = calloc(1, sizeof(*request));
+        put_request(request);
+    }
 
     printf("Listening on port %d\n", port);
     server_loop(sock);
