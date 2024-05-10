@@ -1,4 +1,4 @@
-DIRS = io-uring
+DIRS = io-uring multi-process
 
 .PHONY: all $(DIRS) clean
 
