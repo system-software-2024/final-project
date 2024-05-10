@@ -1,4 +1,4 @@
-DIRS = io-uring multi-process
+DIRS = io-uring multi-process epoll
 
 .PHONY: all $(DIRS) clean
 
