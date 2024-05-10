@@ -27,22 +27,32 @@
 #define MAX_SQE_PER_LOOP        5
 
 static const char* response =
-            "HTTP/1.0 200 OK\r\n"
+            "HTTP/1.1 200 OK\r\n"
             "Server: Assdi2024Server/1.0\r\n"
             "Content-Type: text/html\r\n"
             "Content-Length: 98\r\n"
-            "Connection: close\r\n"
             "\r\n"
             "<!DOCTYPE html><head><title>Hello, World!</title></head><body><h1>Hello, World!</h1></body></html>";
 
 static const char* bad_request =
-            "HTTP/1.0 400 Bad Request\r\n"
+            "HTTP/1.1 400 Bad Request\r\n"
             "Server: Assdi2024Server/1.0\r\n"
             "Content-Type: text/html\r\n"
             "Content-Length: 96\r\n"
             "Connection: close\r\n"
             "\r\n"
             "<!DOCTYPE html><head><title>Bad Request!</title></head><body><h1>Bad Request!</h1></body></html>";
+
+static bool should_close_connection(struct phr_header *headers, size_t num_headers)
+{
+    for (size_t i = 0; i < num_headers; i++) {
+        if (headers[i].name_len == 10 && strncasecmp(headers[i].name, "connection", 10) == 0) {
+            if (headers[i].value_len == 5 && strncasecmp(headers[i].value, "close", 5) == 0)
+                return true;
+        }
+    }
+    return false;
+}
 
 struct conn {
     int epoll_fd;
@@ -126,11 +136,12 @@ static void attempt_recv(struct conn *conn)
         return;
     }
 
+    conn->shutdown = conn->shutdown || minor_version != 1 || should_close_connection(headers, num_headers);
+
     memmove(conn->reqbuf, conn->reqbuf + pret, conn->buflen - pret);
     conn->buflen -= pret;
     conn->prevbuflen = 0;
 
-    conn->shutdown = true;
     send_response(conn, response);
 }
 
