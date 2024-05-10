@@ -99,6 +99,7 @@ static void attempt_recv(struct conn *conn)
     int ret = recv(conn->sock, conn->reqbuf + conn->buflen, BUF_SZ - conn->buflen, 0);
     if (ret <= 0) {
         close_conn(conn);
+        return;
     }
 
     conn->prevbuflen = conn->buflen;
