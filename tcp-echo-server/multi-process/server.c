@@ -7,6 +7,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <arpa/inet.h>
+#include <signal.h>
 #include "server.h"
 
 int main(int argc, char *argv[]) 
@@ -44,6 +45,8 @@ int main(int argc, char *argv[])
         perror("Listen()");
         return 1;
     }
+
+    signal(SIGCHLD, SIG_IGN);
     
     printf("server listening on port %u\n", port);
     while (true) {
@@ -56,9 +59,15 @@ int main(int argc, char *argv[])
             close(listen_fd);
             while (true) {
                 int recv_sz = recv(conn_fd, buf, MAX_MESSAGE_LEN, 0);
+                if (recv_sz < 0)
+                    break;
                 send(conn_fd, buf, recv_sz, 0);
+                if (recv_sz == 0)
+                    break;
                 bzero(buf, sizeof(buf));
             }
+            close(conn_fd);
+            return 0;
         }
     }
 
