@@ -26,15 +26,16 @@
 #define MAX_SQE_PER_LOOP        5
 
 static const char* response =
-            "HTTP/1.1 200 OK\r\n"
+            "HTTP/1.0 200 OK\r\n"
             "Server: Assdi2024Server/1.0\r\n"
             "Content-Type: text/html\r\n"
             "Content-Length: 98\r\n"
+            "Connection: close\r\n"
             "\r\n"
             "<!DOCTYPE html><head><title>Hello, World!</title></head><body><h1>Hello, World!</h1></body></html>";
 
 static const char* bad_request =
-            "HTTP/1.1 400 Bad Request\r\n"
+            "HTTP/1.0 400 Bad Request\r\n"
             "Server: Assdi2024Server/1.0\r\n"
             "Content-Type: text/html\r\n"
             "Content-Length: 96\r\n"
@@ -45,9 +46,12 @@ static const char* bad_request =
 struct conn {
     struct io_uring *ring;
     int sock;
-    int buflen;
-    bool close, reading, writing;
+    int buflen, prevlen;
+    bool shutdown;
+    bool reading, writing;
     char buf[BUF_SZ];
+    int sendbuf_sz;
+    const char *sendbuf;
 };
 
 struct req {
@@ -116,7 +120,7 @@ static void check_and_close_conn(struct conn *conn)
 static void send_bad_request(struct conn *conn)
 {
     add_write_request(conn, bad_request, strlen(bad_request));
-    conn->close = true;
+    conn->shutdown = true;
 }
 
 /* call at the end of read/write */
@@ -134,17 +138,11 @@ static void handle_conn(struct conn *conn)
     if (pret == -2) {
         if (conn->buflen == BUF_SZ) {
             send_bad_request(conn);
-        } else if (!conn->reading && !conn->close) {
+        } else if (!conn->reading) {
             add_read_request(conn);
         }
         return;
     }
-
-    cont = !conn->close && minor_version == 1;
-
-    /* Move remaining buffers */
-    memmove(conn->buf, conn->buf + pret, conn->buflen - pret);
-    conn->buflen -= pret;
 
     /* Error Handling */
     if (pret < 0 || method_len != 3 || memcmp(method, "GET", 3) != 0) {
@@ -152,17 +150,20 @@ static void handle_conn(struct conn *conn)
         return;
     }
 
+    cont = false;
+
+    /* Move remaining buffers */
+    memmove(conn->buf, conn->buf + pret, conn->buflen - pret);
+    conn->buflen -= pret;
+
     /* Normal Response */
     add_write_request(conn, response, strlen(response));
 
     /* Check whether to close the connection */
-    conn->close = !cont;
-    if (cont) {
-        if (!conn->reading) {
-            add_read_request(conn);
-        }
-    } else {
-        check_and_close_conn(conn);
+    conn->shutdown = !cont;
+
+    if (cont && !conn->reading) {
+        add_read_request(conn);
     }
 }
 
@@ -172,17 +173,19 @@ static void handle_read(struct io_uring_cqe* cqe)
     struct conn *conn = request->conn;
     conn->reading = false;
 
-    if (cqe->res < 0 || conn->close) {
+    if (cqe->res <= 0) {
+        conn->shutdown = true;
         check_and_close_conn(conn);
         return;
     }
 
-    conn->close |= cqe->res == 0;
     conn->buflen += cqe->res;
 
     if (!conn->writing) {
         handle_conn(conn);
     }
+
+    check_and_close_conn(conn);
 }
 
 static void handle_write(struct io_uring_cqe* cqe)
@@ -191,11 +194,21 @@ static void handle_write(struct io_uring_cqe* cqe)
     struct conn *conn = request->conn;
     conn->writing = false;
 
-    if (cqe->res < 0 || conn->close) {
+    if (cqe->res <= 0) {
+        conn->shutdown = true;
         check_and_close_conn(conn);
         return;
     }
-    handle_conn(conn);
+
+    if (cqe->res < conn->sendbuf_sz) {
+        conn->sendbuf += cqe->res;
+        conn->sendbuf_sz -= cqe->res;
+        add_write_request(conn, conn->sendbuf, conn->sendbuf_sz);
+    } else if (!conn->shutdown && !conn->reading) {
+        handle_conn(conn);
+    }
+
+    check_and_close_conn(conn);
 }
 
 void server_loop(int sock)

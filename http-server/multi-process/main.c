@@ -26,15 +26,16 @@
 #define MAX_SQE_PER_LOOP        5
 
 static const char* response =
-            "HTTP/1.1 200 OK\r\n"
+            "HTTP/1.0 200 OK\r\n"
             "Server: Assdi2024Server/1.0\r\n"
             "Content-Type: text/html\r\n"
             "Content-Length: 98\r\n"
+            "Connection: close\r\n"
             "\r\n"
             "<!DOCTYPE html><head><title>Hello, World!</title></head><body><h1>Hello, World!</h1></body></html>";
 
 static const char* bad_request =
-            "HTTP/1.1 400 Bad Request\r\n"
+            "HTTP/1.0 400 Bad Request\r\n"
             "Server: Assdi2024Server/1.0\r\n"
             "Content-Type: text/html\r\n"
             "Content-Length: 96\r\n"
@@ -141,6 +142,8 @@ static void handle_client(int sock)
         memmove(buf, buf + pret, buflen - pret);
         buflen -= pret;
         prevbuflen = 0;
+    
+        break;
     }
 }
 
