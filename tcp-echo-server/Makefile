@@ -1,4 +1,4 @@
-DIRS = epoll io-uring multi-process
+DIRS = epoll io-uring io-uring-provide-buffer multi-process
 
 .PHONY: all $(DIRS) clean
 

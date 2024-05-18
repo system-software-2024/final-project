@@ -8,8 +8,8 @@
 #include "liburing.h"
 #include "server.h"
 
+info_t conns[MAX_CONNECTIONS];
 char bufs[MAX_CONNECTIONS][MAX_MESSAGE_LEN] = {0};
-int group_id = 1337;
 
 void add_accept(struct io_uring *ring, int fd, 
         struct sockaddr *client_addr, socklen_t *client_len, unsigned int flags) 
@@ -19,60 +19,41 @@ void add_accept(struct io_uring *ring, int fd,
     io_uring_prep_accept(sqe, fd, client_addr, client_len, 0);
     io_uring_sqe_set_flags(sqe, flags);
 
-    info_t info = {
-        .fd = fd,
-        .type = ACCEPT
-    };
-
-    memcpy(&sqe->user_data, &info, sizeof(info_t));
-    return;
-}
-
-void add_recv(struct io_uring *ring, int fd, unsigned int gid, size_t msg_size, unsigned int flags)
-{
-    struct io_uring_sqe *sqe;
-    sqe = io_uring_get_sqe(ring);
-    io_uring_prep_recv(sqe, fd, NULL, msg_size, 0);
-    io_uring_sqe_set_flags(sqe, flags);
-    sqe->buf_group = gid;
+    info_t* info = &conns[fd];
+    info->fd = fd;
+    info->type = ACCEPT;
     
-    info_t info = {
-        .fd = fd,
-        .type = RECV
-    };
-    memcpy(&sqe->user_data, &info, sizeof(info_t));
+    io_uring_sqe_set_data(sqe, info);
     return;
 }
 
-void add_send(struct io_uring *ring, int fd, __u16 bid, size_t msg_size, unsigned int flags) 
+void add_recv(struct io_uring *ring, int fd, size_t msg_size, unsigned int flags)
 {
     struct io_uring_sqe *sqe;
     sqe = io_uring_get_sqe(ring);
-    io_uring_prep_send(sqe, fd, &bufs[bid], msg_size, 0);
+    io_uring_prep_recv(sqe, fd, &bufs[fd], msg_size, 0);
     io_uring_sqe_set_flags(sqe, flags);
 
-    info_t info = {
-        .fd = fd, 
-        .type = SEND,
-        .bid = bid
-    };
+    info_t* info = &conns[fd];
+    info->fd = fd;
+    info->type = RECV;
 
-    memcpy(&sqe->user_data, &info, sizeof(info_t));
+    io_uring_sqe_set_data(sqe, info);
     return;
 }
 
-void add_provide_buf(struct io_uring *ring, __u16 bid, unsigned int gid)
+void add_send(struct io_uring *ring, int fd, size_t msg_size, unsigned int flags) 
 {
     struct io_uring_sqe *sqe;
     sqe = io_uring_get_sqe(ring);
-    io_uring_prep_provide_buffers(sqe, bufs[bid], MAX_MESSAGE_LEN, 1, gid, bid);
+    io_uring_prep_send(sqe, fd, &bufs[fd], msg_size, 0);
+    io_uring_sqe_set_flags(sqe, flags);
 
-    info_t info = {
-        .fd = 0,
-        .type = PROV_BUF,
-    };
+    info_t* info = &conns[fd];
+    info->fd = fd;
+    info->type = SEND;
 
-    memcpy(&sqe->user_data, &info, sizeof(info_t));
+    io_uring_sqe_set_data(sqe, info);
     return;
 }
 
@@ -119,7 +100,7 @@ int main(int argc, char *argv[])
 
     memset(&params, 0, sizeof(params));
 
-    if (io_uring_queue_init_params(2048, &ring, &params) < 0) {
+    if (io_uring_queue_init_params(4096, &ring, &params) < 0) {
         perror("io_uring_queue_init_params()");
         return 1;
     }
@@ -130,92 +111,62 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    // check if buffer selection is supported
-    struct io_uring_probe *probe;
-    probe = io_uring_get_probe_ring(&ring);
-    if (!probe || !io_uring_opcode_supported(probe, IORING_OP_PROVIDE_BUFFERS)) {
-        fprintf(stderr, "Buffer Selection is not supported in the kernel\n");
-        return 0;
-    }
-    io_uring_free_probe(probe);
 
-    // register buffer for buffer selection
-    struct io_uring_sqe *sqe;
-    struct io_uring_cqe *cqe;
-
-    sqe = io_uring_get_sqe(&ring);
-    io_uring_prep_provide_buffers(sqe, bufs, MAX_MESSAGE_LEN, MAX_CONNECTIONS, group_id, 0);        
-    io_uring_submit(&ring);
-   
-    io_uring_wait_cqe(&ring, &cqe);
-    if (cqe->res < 0) {
-        fprintf(stderr, "cqe->res: %d\n", cqe->res);
-        return 1;
-    }
-    io_uring_cqe_seen(&ring, cqe);
-    // add first accept SQE to monitor for new incoming connections
     add_accept(&ring, listen_fd, (struct sockaddr *)&client_addr, &client_len, 0);
 
     while (true) {
-        io_uring_submit_and_wait(&ring, 1);
         struct io_uring_cqe* cqe;
-        unsigned int head;
-        unsigned int count = 0;
+        // tell kernel we have put a SQE on the submission ring
+        io_uring_submit(&ring);
+        
+        // wait for new CQE to become available
+        int ret = io_uring_wait_cqe(&ring, &cqe);
+        if (ret != 0) {
+            perror("io_uring_wait_cqe()");
+            return 1;
+        }
+        
+        // check how many CQE's are on the CQ ring at this moment
+        struct io_uring_cqe *cqes[BACK_LOG];
+        int cqe_count = io_uring_peek_batch_cqe(&ring, cqes, sizeof(cqes)/sizeof(cqes[0]));
 
-        io_uring_for_each_cqe(&ring, head, cqe) {
-            
-            ++count;
-            info_t info;
-            memcpy(&info, &cqe->user_data, sizeof(info_t));
-
-            int type = info.type;
-            if (cqe->res == -ENOBUFS) {
-                fprintf(stderr, "buffers in automatic buffer selection is empty\n");
-                return 1;
-            }
-            switch (type) {
-            case PROV_BUF: {
-                if (cqe->res < 0) {
-                    fprintf(stderr, "cqe->res: %d\n", cqe->res);
-                    return 1;
-                }
-                break;
-            }
+        // go through all the CQEs
+        for (int i = 0; i < cqe_count; i++) {
+            struct io_uring_cqe *cqe = cqes[i];
+            info_t *info = (info_t *)io_uring_cqe_get_data(cqe);
+            int type = info->type;
+            switch(type) {
             case ACCEPT: {
                 int conn_fd = cqe->res;
-                // only read when there is no error
-                if (conn_fd >= 0) {
-                    add_recv(&ring, conn_fd, group_id, MAX_MESSAGE_LEN, IOSQE_BUFFER_SELECT);
-                }
-                // new connected client. Read data from socket and re-add accept to monitor for new connections.
+                io_uring_cqe_seen(&ring, cqe);
+                // new connected client, read data from socket and re-add accept to monitor for new connections
+                add_recv(&ring, conn_fd, MAX_MESSAGE_LEN, 0);
                 add_accept(&ring, listen_fd, (struct sockaddr *)&client_addr, &client_len, 0);
                 break;
             }
             case RECV: {
                 int recv_sz = cqe->res;
-                int bid = (cqe->flags) >> 16;
-                if (cqe->res <= 0) {
-                    // read failed, re-add the buffer
-                    add_provide_buf(&ring, bid, group_id);
-                    close(info.fd);
-                } else {
-                    // have been received to bufs, send the same data to SQE
-                    add_send(&ring, info.fd, bid, recv_sz, 0); 
+                if (recv_sz <= 0) {
+                    // no bytes available on socket, client must be disconnected
+                    io_uring_cqe_seen(&ring, cqe);
+                    shutdown(info->fd, SHUT_RDWR);
+                }else {
+                    // bytes have been read into bufs, now add write to socket sqe
+                    io_uring_cqe_seen(&ring, cqe);
+                    add_send(&ring, info->fd, recv_sz, 0);
                 }
                 break;
             }
             case SEND: {
-                // write complete, re-add the buffer
-                add_provide_buf(&ring, info.bid, group_id);
-                // add recv to the existing connection
-                add_recv(&ring, info.fd, group_id, MAX_MESSAGE_LEN, IOSQE_BUFFER_SELECT);
+                // write to socket completed, re-add socket read
+                io_uring_cqe_seen(&ring, cqe);
+                add_recv(&ring, info->fd, MAX_MESSAGE_LEN, 0);
                 break;
             }
             default: 
                 break;
             }
         }
-        io_uring_cq_advance(&ring, count);
     }
 
     return 0;

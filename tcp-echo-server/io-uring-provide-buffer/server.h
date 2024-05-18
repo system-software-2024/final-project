@@ -6,16 +6,16 @@
 #define MAX_CONNECTIONS 4096
 
 enum {
-    ACCEPT,
-    POLL_LISTEN,
-    POLL_NEW_CONNECTION, 
+    ACCEPT, 
     SEND,
-    RECV,
+    RECV, 
+    PROV_BUF
 };
 
 typedef struct info {
     __u32 fd;
     __u16 type;
+    __u16 bid;
 } info_t;
 
 #endif
